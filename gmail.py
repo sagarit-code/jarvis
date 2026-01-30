@@ -28,6 +28,7 @@ class GmailState(TypedDict):
     email_of_person:str
     send_mail_draft:str
     send_mail_subject:str
+    state_email_send:str
 
 
 def identifying_the_main_intent(state:GmailState) -> GmailState:
@@ -117,10 +118,10 @@ def intent_query_for_writing(state:GmailState) -> GmailState:
     return state
 
 def preparing_draft(state:GmailState) -> GmailState:
-
+    name = state["writing_intent"]["to"].lower()
     messages_to=service.users().messages().list(
         userId="me",
-        q=f"from:{state['writing_intent']['to']}",
+        q = f"from:{name}",
         maxResults=30
     ).execute()
 
@@ -135,7 +136,6 @@ def preparing_draft(state:GmailState) -> GmailState:
             id=each,
             format="full"
         ).execute()
-
         for details in details_id["payload"]["headers"]:
             if details["name"]=="From":
                 if details["value"] not in emails:
@@ -154,8 +154,9 @@ def preparing_draft(state:GmailState) -> GmailState:
         print("we have more than 1 emails with this name , can u specific the person full name")
 
 
-
-    prompt_for_subject="you are an expert email writer, given the query generate the revelant and crisp email subject"
+    prompt_for_subject = "You are a professional email assistant. Write ONLY the subject line. No intro, no quotes, no 'Subject: ' prefix."
+    prompt_for_body = "You are a professional email assistant. Write ONLY the email body. Do not include a subject line, do not include intros like 'Here is the draft', and do not include placeholders like [Your Name] unless you have to."
+    
     messagess=[
         SystemMessage(content=prompt_for_subject),
         HumanMessage(content=state["human_query"])
@@ -163,7 +164,6 @@ def preparing_draft(state:GmailState) -> GmailState:
     responsee=model.invoke(messagess)
     subject=responsee.content
 
-    prompt_for_body="you are an expert email writer, given the query generate the revelant and crisp email body"
     messagess2=[
         SystemMessage(content=prompt_for_body),
         HumanMessage(content=state["human_query"])
@@ -174,7 +174,8 @@ def preparing_draft(state:GmailState) -> GmailState:
     msg=EmailMessage()
     msg["From"]="me"
     msg["To"]=state["email_of_person"]
-    msg["Subject"]=subject
+    
+    msg["Subject"] = subject
     msg.set_content(body)
 
     state["send_mail_draft"]=body
@@ -211,29 +212,36 @@ def sending_final_draft(state:GmailState) -> GmailState:
     msg=EmailMessage()
     msg["From"]="me"
     msg["To"]=state["email_of_person"]
-    msg["Subject"]=state["send_mail_subject"]
+    msg["Subject"] = state["send_mail_subject"]
     msg.set_content(state["send_mail_draft"])
 
     encoded_msg_for_gmail=base64.urlsafe_b64encode(
         msg.as_bytes()
     ).decode()
 
-    draft=service.users().drafts.create(
+    draft=service.users().drafts().create(
         userId="me",
-        body={
+        body={"message":{
             "raw":encoded_msg_for_gmail
-        }
+        }}
     ).execute()
 
-    sending_draft=service.users().drafts.send(
+    sending_draft=service.users().drafts().send(
         userId="me",
         body={"id":draft["id"]}
     ).execute()
+
+    state["state_email_send"]="sent"
+    return state
 
 
 graph=StateGraph(GmailState)
 graph.add_node("main_intent",identifying_the_main_intent)
 graph.add_node("writing_intent",intent_query_for_writing)
+graph.add_node("draft",preparing_draft)
+graph.add_node("hitl",human_in_loop_send)
+graph.add_node("final_draft",sending_final_draft)
+
 
 graph.add_edge(START,"main_intent")
 graph.add_conditional_edges(
@@ -245,16 +253,19 @@ graph.add_conditional_edges(
         "end":END
     }
 )
-graph.add_edge("writing_intent",END)
+graph.add_edge("writing_intent","draft")
+graph.add_edge("draft","hitl")
+graph.add_edge("hitl","final_draft")
+graph.add_edge("final_draft",END)
 
 
 app=graph.compile()
-query="send an email to rahul saying that schedule the meeting tomorrow"
+query="send an email to mem0 saying that i dont have any issues or problems related to mem0"
 
 result=app.invoke({"human_query":query})
 
 print(result["main_intent"])
-print(result["writing_intent"])
+print(result["state_email_send"])
 
 #workflows 
 
